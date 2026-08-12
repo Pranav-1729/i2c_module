@@ -1,0 +1,108 @@
+`timescale 1ns/1ps
+module i2c_slave_tb();
+
+parameter CLK_PERIOD = 10;   // 120 ns
+parameter START_OFFSET = 120;
+parameter BIT_PERIOD = 120;
+
+wire inout sda;
+reg clk;        // 1 clk cycle = #10
+reg scl;
+reg rst_n;
+reg read;
+reg send_ack;
+reg [7:0] read_data;
+reg [7:0] stored_data = 8'hd9;
+reg pull_sda_low = 1'b0; 
+reg pull_scl_low = 1'b0;
+assign sda = pull_sda_low ? 1'b0 : 1'bz; 
+assign scl = pull_scl_low ? 1'b0 : 1'bz;
+
+i2c_slave DUT(
+    .sda(sda),
+    .clk(clk),
+    .scl(scl),
+    .rst_n(rst_n),
+);
+initial begin
+    #START_OFFSET
+    forever begin
+        #5 scl = ~scl;
+    end
+end
+
+initial begin
+    #START_OFFSET
+    forever begin
+        #5 clk = ~clk;
+    end
+end
+
+initial begin
+    sda = 1;
+    scl = 1;
+    clk = 1;
+    #START_OFFSET/2;
+
+    i2c_start;
+    send_byte(8'b10111011);  // address and read write bit
+    read = send_byte[0];
+    #BIT_PERIOD ;            // ack 
+
+    if(read)
+        read_byte;
+    else 
+        send_byte(stored_data);
+    
+    send_bit(!send_ack);      // since pulling low is ack
+    i2c_stop;
+end
+
+task i2c_start;
+    begin
+       pull_scl_low = 0;
+       #10 pull_sda_low = 1;
+       #10 pull_scl_low = 1;
+    end
+endtask
+
+task send_bit(
+    input bit;
+)   begin
+    pull_sda_low <= ~bit;
+    #BIT_PERIOD;
+    end
+endtask
+
+task send_byte(
+    input [7:0] data;
+)   begin
+        integer i;
+        for( i=7; i>=0; i = i-1 ) begin
+            send_bit(data[i]);
+        end
+        pull_sda_low = 0; // relz sda for ack bit      
+    end
+endtask
+
+task read_byte;
+    begin
+        integer j;
+        for (j = 7; j>=0; j = j-1) begin
+            read_data[j] = sda;
+            #BIT_PERIOD; 
+        end
+        pull_sda_low = 0;
+        send_ack = 1;
+    end
+endtask
+
+task i2c_stop;
+    begin
+        pull_sda_low = 1;
+        pull_scl_low = 0;
+        #START_OFFSET/2;
+        sda = 1;        // SDA rises while SCL high
+    end
+endtask
+endmodule
