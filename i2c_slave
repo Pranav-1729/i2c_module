@@ -1,0 +1,179 @@
+module i2c_slave #(
+    parameter ADDRESS = 7'b0010000
+)(
+    inout sda,
+    input scl,
+    input clk,
+    input rst_n
+);
+
+parameter BITCYCLES = 12;                 //  number of clk cycles in 1 bit
+parameter BITCYCLE_WIDTH = 4;           // number of bits to be inb bit_cycles for proper timing record
+parameter idle = 3'b000;
+parameter address_state = 3'b001;
+parameter ack_state = 3'b010;
+parameter data_state = 3'b011;
+parameter data_ack_state = 3'b100;
+
+reg [2:0] state = idle;
+reg [BITCYCLE_WIDTH - 1:0] bit_cycles = 4'b0;     // to count 12 clk cycles for every bit
+reg [4:0] bit_counter = 5'b0;    // to count 18 bits in every 1 byte data frame
+reg read;                    // 1 for read and 0 for write, z for slave not selected
+reg [7:0] transmitted_address;   // the 8 bit address transmitted by controller
+reg [7:0] mem [3:0];         // 8 bit data stored in a 4x1 mem array :::   first 2 msb for data received, other two store data to be tx'd
+reg [3:0] mem_used = 4'b0;       // stores 1 for corresponding bytes in memory which are used in communication            
+reg pull_sda_low = 0;
+reg use_index;                   // decide in which of the two possibilities for each read and write to actually go with
+reg bit_prev;
+
+wire [1:0] tempw,tempr;          // temporary variables
+wire t3, t2, t1, t0;              
+reg address_ack,
+    data_ack;
+reg [3:0] count = 0;
+
+assign sda = pull_sda_low ? 0 : 1'bz;
+assign {t3,t2,t1,t0} = mem_used;   
+assign tempw = !(t3^t2) + 2'd2;     // to use tempw as the write index in mem, automatically updating in a fifo manner for the two writable bytes
+assign tempr = !(t1^t0); 
+
+always @(negedge rst_n) begin            // reset when rst_n == 0
+    state <= idle;
+    bit_cycles <= 0;
+    bit_counter <= 0;
+    transmitted_address <= 0;
+    pull_sda_low <= 0;
+    read <= 0;
+    address_ack <= 0;
+    data_ack <= 0;
+    count <= 0;
+    mem_used <= 0;
+    bit_prev <= 0;
+    // for(i=0;i<4;i=i+1)              // initialising mem to 0 
+    //     mem[i] <= 8'h00;               
+
+end
+
+always@(negedge clk) begin
+    case(state)
+        idle: begin
+        bit_prev <= sda;
+            if(bit_prev && (!sda)) begin
+                if(scl == 1)
+                    state <= address_state;
+            end
+        end
+        
+        address_state: begin
+            if(bit_counter < 7 ) begin
+                if(bit_cycles < BITCYCLES - 1) begin
+                    bit_cycles <= bit_cycles + 1;
+                    transmitted_address[7 - bit_counter] <= sda;
+                end
+ 
+                else begin                         // bit_cycles reaches 11
+                    bit_cycles <= 0;
+                    bit_counter <= bit_counter + 1;
+                end
+            end
+
+            else begin             // bit_counter reaches 7
+                bit_counter <= 0;
+                bit_cycles <= 0;
+                state <= ack_state;
+                if(transmitted_address[7:1] == ADDRESS) begin
+                    address_ack <= 1;          // address matched
+                    read <= transmitted_address[0];
+                end
+                else 
+                    address_ack <= 0;
+            end
+        end
+        
+        ack_state: begin
+            if(bit_cycles < BITCYCLES - 1) begin
+                bit_cycles <= bit_cycles + 1;
+                pull_sda_low <= address_ack;     // 1 if matched i.e. the sda will be pulled low for an ack otherwise a nack
+            end
+ 
+            else begin              
+                bit_cycles <= 0;
+                bit_counter <= 0;
+                state <= data_state;
+                pull_sda_low <= 0;
+            end
+        end
+
+        data_state: begin
+            if(bit_counter < 7 ) begin
+                if(bit_cycles < BITCYCLES - 1) begin
+                    bit_cycles <= bit_cycles + 1;
+                    if(read) begin                                  // controller wants to read
+                        pull_sda_low <= !(mem[tempr][7-bit_counter]);   // if bit = 1, sda rlzd ::: if bit = 0, sda pulled low
+                        mem_used[tempr] <= 1;      
+                    end                  
+                    else begin                                      // controller wants to write
+                        pull_sda_low <= 0;
+                        mem[tempw][7-bit_counter] <= sda;
+                        mem_used[tempw] <= 1;
+                    end
+                end
+                else begin                         // bit_cycles reaches 11
+                    bit_cycles <= 0;
+                    bit_counter <= bit_counter + 1;
+                end
+            end
+
+            else begin         // bit_counter == 7
+                if(bit_cycles < BITCYCLES - 1) begin
+                    bit_cycles <= bit_cycles + 1;
+                    if(read) begin    // controller wants to read
+                        pull_sda_low <= !(mem[tempr][7-bit_counter]);   // if bit = 1, sda rlzd ::: if bit = 0, pull_sda_low =1 & sda pulled low
+                        mem_used[tempr] <= 1;  
+                    end
+                    else begin   // controller wants to write
+                        pull_sda_low <= 0;
+                        mem[tempw][7-bit_counter] <= sda;
+                        mem_used[tempw] <= 1;
+                    end
+                end
+                else begin                         // bit_cycles reaches 11
+                    bit_cycles <= 0;
+                    state <= data_ack_state;
+                end
+            end
+        end
+
+        data_ack_state: begin
+            if(bit_cycles < BITCYCLES - 1) begin
+                bit_cycles <= bit_cycles + 1;
+                if(bit_counter == 7)          // all 8 bits communicated
+                    pull_sda_low <= 1;
+                else  begin
+                    pull_sda_low <= 0;
+                bit_prev <= sda;
+                end
+            end
+
+            else begin
+                pull_sda_low <= 0;
+                if(scl & (count < 4)) begin
+                    count <= count + 1;
+                    if( !bit_prev && sda )
+                        //end condition met
+                        state <= idle;
+                end
+                else begin
+                    state <= data_state;    // no end condition means theres another byte coming in
+                    count <= 0;
+                    bit_counter <= 0;
+                    bit_cycles <= 0;
+                end
+            end
+        end
+
+        default:
+            state <= idle;
+    endcase
+end
+endmodule
