@@ -1,0 +1,65 @@
+`timescale 1ns/1ps
+
+module i2c_master(
+    input clk,               // T = 10ns 
+    input rst,               // rst ==0
+    input rw,                // read== 1, first bit after start
+    input start,
+    input [7:0] slave_addr,
+    inout [7:0] master_bus,
+    inout sda,
+    output scl,            // T = 120ns
+    output busy,
+    output ack_error,
+    output done
+);
+
+reg [7:0] slave_address;
+reg [7:0] read_this;
+reg [7:0] write_this;
+reg [7:0] divide_clk_counter;    // divides clock frequency using scl_low
+
+reg read;
+reg pull_sda_low;
+reg pull_scl_low;     // pull low interrupt (overrides the scl generation function)
+reg scl_low;          // only to oscillate for scl generation
+reg m_busy;
+reg m_ack_erorr;
+reg m_done;
+reg pull_masterbus_low;
+reg [2:0] state = 3'b000;
+
+parameter IDLE = 000;
+parameter START = 001;
+parameter ADDRESS_STATE = 010;
+parameter ADDRESS_ACK_STATE = 011;
+parameter DATA_STATE = 100;
+parameter DATA_ACK_STATE = 101;
+parameter STOP = 110;
+
+assign scl = (pull_scl_low & scl_low) ? 1'b0 : 1'bz;
+assign sda = pull_sda_low ? 1'b0 : 1'bz;
+
+assign master_bus = pull_masterbus_low ? 1'b0 : 1'bz;
+assign busy = m_busy;
+assign ack_erorr = m_ack_erorr;
+assign done = m_done;
+
+always @(negedge rst or posedge clk) begin
+    if(!rst) begin
+        pull_sda_low <= 0;
+        pull_scl_low <= 0;
+        scl_low <= 0;
+        m_ack_error <= 0;
+        m_busy <= 0;
+        m_done <= 0;
+        pull_masterbus_low <= 0;
+    end
+
+    else begin 
+        
+
+    end
+
+end
+endmodule
